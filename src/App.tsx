@@ -28,7 +28,7 @@ export default function App() {
   const [students, setStudents] = useState<Student[]>([]);
   const [rosterLoaded, setRosterLoaded] = useState(false);
   const [resultsLoaded, setResultsLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'wordcloud' | 'unmatched'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'wordcloud' | 'unmatched' | 'questions'>('overview');
   const [searchTerm, setSearchTerm] = useState('');
   const [descriptiveQuestions, setDescriptiveQuestions] = useState<string[]>([]);
   const [selectedQuestion, setSelectedQuestion] = useState<string>('all');
@@ -432,6 +432,49 @@ export default function App() {
     );
   }, [students, searchTerm]);
 
+  const questionStats = useMemo(() => {
+    if (!resultsLoaded) return [];
+    
+    const submittedStudents = students.filter(s => s.responses && Object.keys(s.responses).length > 0);
+    const totalSubmitted = submittedStudents.length;
+    
+    if (totalSubmitted === 0) return [];
+    
+    const allQuestions = new Set<string>();
+    submittedStudents.forEach(s => {
+      Object.keys(s.responses || {}).forEach(q => allQuestions.add(q));
+    });
+    
+    return Array.from(allQuestions).map(q => {
+      const isDescriptive = q.includes('?') || q.includes('시간이다');
+      let respondedCount = 0;
+      let sum = 0;
+      const missingStudents: string[] = [];
+      
+      submittedStudents.forEach(s => {
+        const val = s.responses?.[q];
+        if (val !== undefined && val !== null && val !== '') {
+          respondedCount++;
+          if (!isDescriptive) {
+            const num = parseFloat(val);
+            if (!isNaN(num)) sum += num;
+          }
+        } else {
+          missingStudents.push(`${s.grade}-${s.class}-${s.number} ${s.name}`);
+        }
+      });
+      
+      return {
+        question: q,
+        isDescriptive,
+        respondedCount,
+        totalSubmitted,
+        missingStudents,
+        average: isDescriptive || respondedCount === 0 ? null : (sum / respondedCount).toFixed(2)
+      };
+    });
+  }, [students, resultsLoaded]);
+
   // --- UI Render ---
   return (
     <div className="min-h-screen bg-[#f5f5f4] text-[#1a1a1a] font-sans selection:bg-blue-200">
@@ -532,6 +575,12 @@ export default function App() {
                 className={cn("px-4 py-2 text-sm font-medium rounded-md transition-all", activeTab === 'wordcloud' ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900")}
               >
                 서술형 워드클라우드
+              </button>
+              <button
+                onClick={() => setActiveTab('questions')}
+                className={cn("px-4 py-2 text-sm font-medium rounded-md transition-all", activeTab === 'questions' ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900")}
+              >
+                문항별 입력 현황
               </button>
               {unmatchedResults.length > 0 && (
                 <button
@@ -814,6 +863,74 @@ export default function App() {
                           </tr>
                         );
                       })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Tab Content: Questions */}
+            {activeTab === 'questions' && (
+              <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-200px)]">
+                <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="text-blue-500" size={20} />
+                    <h3 className="font-bold">문항별 입력 현황</h3>
+                  </div>
+                  <div className="text-sm text-slate-500">
+                    총 제출 인원: {students.filter(s => s.responses && Object.keys(s.responses).length > 0).length}명
+                  </div>
+                </div>
+                
+                <div className="overflow-auto flex-1 p-0">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
+                      <tr>
+                        <th className="px-6 py-3 font-medium text-slate-500 w-1/2">문항</th>
+                        <th className="px-6 py-3 font-medium text-slate-500 text-center">유형</th>
+                        <th className="px-6 py-3 font-medium text-slate-500 text-center">응답률</th>
+                        <th className="px-6 py-3 font-medium text-slate-500 text-center">평균 점수</th>
+                        <th className="px-6 py-3 font-medium text-slate-500">미응답 학생</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {questionStats.map((stat, i) => (
+                        <tr key={i} className="hover:bg-slate-50 transition-colors">
+                          <td className="px-6 py-4 font-medium text-slate-800">{stat.question}</td>
+                          <td className="px-6 py-4 text-center">
+                            <span className={cn("px-2 py-1 rounded-full text-xs font-medium", stat.isDescriptive ? "bg-blue-50 text-blue-600" : "bg-emerald-50 text-emerald-600")}>
+                              {stat.isDescriptive ? '서술형' : '척도 (0~3)'}
+                            </span>
+                          </td>
+                          <td className="px-6 py-4 text-center">
+                            <div className="flex flex-col items-center">
+                              <span className={cn("font-bold", stat.respondedCount === stat.totalSubmitted ? "text-emerald-600" : "text-amber-600")}>
+                                {stat.respondedCount} / {stat.totalSubmitted}
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                ({Math.round((stat.respondedCount / stat.totalSubmitted) * 100)}%)
+                              </span>
+                            </div>
+                          </td>
+                          <td className="px-6 py-4 text-center font-mono text-slate-600">
+                            {stat.average !== null ? stat.average : '-'}
+                          </td>
+                          <td className="px-6 py-4">
+                            {stat.missingStudents.length === 0 ? (
+                              <span className="text-emerald-500 text-xs flex items-center gap-1"><CheckCircle2 size={12}/> 전원 응답</span>
+                            ) : (
+                              <details className="cursor-pointer text-amber-600 text-xs">
+                                <summary className="hover:text-amber-800 font-medium outline-none">
+                                  미응답 {stat.missingStudents.length}명 보기
+                                </summary>
+                                <div className="mt-2 p-2 bg-amber-50 rounded border border-amber-100 max-h-32 overflow-y-auto">
+                                  {stat.missingStudents.join(', ')}
+                                </div>
+                              </details>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
                     </tbody>
                   </table>
                 </div>
