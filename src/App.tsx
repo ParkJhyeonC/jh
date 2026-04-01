@@ -1,9 +1,11 @@
-import React, { useState, useMemo } from 'react';
-import { Upload, FileSpreadsheet, Users, AlertTriangle, Cloud, BarChart3, Search, Download, CheckCircle2 } from 'lucide-react';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Upload, FileSpreadsheet, Users, AlertTriangle, Cloud, BarChart3, Search, Download, CheckCircle2, Sparkles, Loader2 } from 'lucide-react';
 import { cn } from './lib/utils';
 import * as XLSX from 'xlsx';
 import WordCloud from './components/WordCloud';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell } from 'recharts';
+import { GoogleGenAI } from '@google/genai';
+import Markdown from 'react-markdown';
 
 // Types
 interface Student {
@@ -28,6 +30,70 @@ export default function App() {
   const [resultsLoaded, setResultsLoaded] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'wordcloud'>('overview');
   const [searchTerm, setSearchTerm] = useState('');
+  const [descriptiveQuestions, setDescriptiveQuestions] = useState<string[]>([]);
+  const [selectedQuestion, setSelectedQuestion] = useState<string>('all');
+  const [aiAnalysis, setAiAnalysis] = useState<string>('');
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
+
+  useEffect(() => {
+    setAiAnalysis('');
+    setAnalysisError('');
+  }, [selectedQuestion]);
+
+  const analyzeWithAI = async () => {
+    if (!process.env.GEMINI_API_KEY) {
+      setAnalysisError('Gemini API 키가 설정되지 않았습니다.');
+      return;
+    }
+    
+    setIsAnalyzing(true);
+    setAnalysisError('');
+    
+    try {
+      const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+      
+      let questionText = selectedQuestion === 'all' ? '전체 서술형 문항' : selectedQuestion;
+      let responsesText = '';
+      
+      if (selectedQuestion === 'all') {
+        responsesText = students.map(s => s.descriptive).filter(Boolean).join('\n- ');
+      } else {
+        responsesText = students.map(s => s.responses?.[selectedQuestion]).filter(Boolean).join('\n- ');
+      }
+      
+      if (!responsesText.trim()) {
+        setAnalysisError('분석할 응답 데이터가 없습니다.');
+        setIsAnalyzing(false);
+        return;
+      }
+
+      const prompt = `다음은 정서행동특성검사에서 학생들의 서술형 응답입니다.
+문항: ${questionText}
+
+학생들의 응답:
+- ${responsesText}
+
+위 응답들을 바탕으로 다음 사항들을 분석해주세요:
+1. 학생들의 전반적인 정서/행동 특성 및 주요 관심사 요약
+2. 긍정적인 측면과 부정적인/우려되는 측면
+3. 교사가 학급 운영이나 상담 시 주의 깊게 살펴봐야 할 점 및 지도 조언
+
+전문적이고 따뜻한 교사의 시각에서 분석 결과를 작성해주세요.`;
+
+      const response = await ai.models.generateContent({
+        model: 'gemini-3-flash-preview',
+        contents: prompt,
+      });
+      
+      setAiAnalysis(response.text || '분석 결과를 생성하지 못했습니다.');
+    } catch (err) {
+      console.error('AI Analysis error:', err);
+      setAnalysisError('AI 분석 중 오류가 발생했습니다. 다시 시도해주세요.');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
 
   // --- Excel Parsing Logic ---
   const handleRosterUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -46,8 +112,8 @@ export default function App() {
         const generateUniqueCode = () => {
           let code;
           do {
-            // Generate 6-character alphanumeric code
-            code = Math.random().toString(36).substring(2, 8).toUpperCase();
+            // Generate 5-character alphanumeric code
+            code = Math.random().toString(36).substring(2, 7).toUpperCase();
           } while (existingCodes.has(code));
           existingCodes.add(code);
           return code;
@@ -58,11 +124,20 @@ export default function App() {
           const json = XLSX.utils.sheet_to_json<any>(sheet);
           
           json.forEach(row => {
-            const name = row['이름'] || row['성명'] || row['Name'] || row['name'];
-            const grade = row['학년'] || row['Grade'] || '';
-            const cls = row['반'] || row['Class'] || sheetName.replace(/[^0-9]/g, '');
-            const num = row['번호'] || row['Number'] || '';
-            const id = row['학번'] || row['ID'] || `${grade}${cls.toString().padStart(2, '0')}${num.toString().padStart(2, '0')}`;
+            // 띄어쓰기 무시하고 키워드 포함 여부로 컬럼 찾기
+            const findKey = (keywords: string[]) => Object.keys(row).find(k => keywords.some(kw => k.replace(/\s+/g, '').toLowerCase().includes(kw)));
+            
+            const nameKey = findKey(['이름', '성명', 'name']);
+            const gradeKey = findKey(['학년', 'grade']);
+            const clsKey = findKey(['반', 'class']);
+            const numKey = findKey(['번호', 'number']);
+            const idKey = findKey(['학번', 'id']);
+
+            const name = nameKey ? row[nameKey] : '';
+            const grade = gradeKey ? row[gradeKey] : '';
+            const cls = clsKey ? row[clsKey] : sheetName.replace(/[^0-9]/g, '');
+            const num = numKey ? row[numKey] : '';
+            const id = idKey ? row[idKey] : `${grade}${cls.toString().padStart(2, '0')}${num.toString().padStart(2, '0')}`;
             
             if (name) {
               parsedStudents.push({
@@ -77,6 +152,13 @@ export default function App() {
           });
         });
         
+        if (parsedStudents.length === 0) {
+          alert("명렬표에서 학생 데이터를 찾을 수 없습니다.\n엑셀 파일의 첫 번째 줄(헤더)에 '이름' 또는 '성명' 열이 있는지 확인해주세요.");
+          e.target.value = ''; // input 초기화
+          setRosterLoaded(false);
+          return;
+        }
+
         setStudents(parsedStudents);
         setRosterLoaded(true);
       } catch (err) {
@@ -101,14 +183,23 @@ export default function App() {
         const workbook = XLSX.read(data, { type: 'array' });
         
         let updatedStudents = [...students];
+        let matchCount = 0;
+        const descKeys = new Set<string>();
         
         workbook.SheetNames.forEach(sheetName => {
           const sheet = workbook.Sheets[sheetName];
           const json = XLSX.utils.sheet_to_json<any>(sheet);
           
           json.forEach(row => {
-            const name = row['이름'] || row['성명'];
-            const id = row['학번']?.toString();
+            const findKey = (keywords: string[]) => Object.keys(row).find(k => keywords.some(kw => k.replace(/\s+/g, '').toLowerCase().includes(kw)));
+            
+            const nameKey = findKey(['이름', '성명', 'name']);
+            const idKey = findKey(['학번', 'id']);
+            const totalKey = findKey(['총점', '점수', 'score']);
+            const riskKey = findKey(['위험군', '판정', 'risk']);
+
+            const name = nameKey ? row[nameKey] : '';
+            const id = idKey ? row[idKey]?.toString() : '';
             
             const studentIndex = updatedStudents.findIndex(s => 
               (id && s.id === id) || 
@@ -116,6 +207,7 @@ export default function App() {
             );
             
             if (studentIndex !== -1) {
+              matchCount++;
               let calculatedScore = 0;
               let descriptiveTexts: string[] = [];
               let responses: Record<string, any> = {};
@@ -126,11 +218,13 @@ export default function App() {
                 
                 responses[key] = value;
 
-                if (['학번', '이름', '성명', '학년', '반', '번호', '총점', '점수', '위험군', '판정', 'Score', 'Risk'].includes(key)) return;
+                const normalizedKey = key.replace(/\s+/g, '').toLowerCase();
+                if (['학번', '이름', '성명', '학년', '반', '번호', '총점', '점수', '위험군', '판정', 'score', 'risk', '고유코드'].some(k => normalizedKey.includes(k))) return;
 
                 const isDescriptive = key.includes('?') || key.includes('시간이다');
                 
                 if (isDescriptive) {
+                  descKeys.add(key);
                   descriptiveTexts.push(String(value));
                 } else {
                   const numValue = parseFloat(value);
@@ -140,11 +234,9 @@ export default function App() {
                 }
               });
 
-              const score = row['총점'] !== undefined ? parseFloat(row['총점']) : 
-                            row['점수'] !== undefined ? parseFloat(row['점수']) : 
-                            row['Score'] !== undefined ? parseFloat(row['Score']) : calculatedScore;
+              const score = totalKey && row[totalKey] !== undefined ? parseFloat(row[totalKey]) : calculatedScore;
                             
-              const riskLevel = row['위험군'] || row['판정'] || row['Risk'] || '';
+              const riskLevel = riskKey ? row[riskKey] : '';
               const descriptive = descriptiveTexts.join(' ');
               
               updatedStudents[studentIndex] = {
@@ -158,6 +250,12 @@ export default function App() {
           });
         });
         
+        if (matchCount === 0) {
+          alert("업로드한 검사결과에서 명렬표와 일치하는 학생(이름 또는 학번)을 한 명도 찾을 수 없습니다.\n파일을 다시 확인해주세요.");
+          e.target.value = '';
+          return;
+        }
+
         // Categorize based on score if riskLevel is empty
         updatedStudents = updatedStudents.map(s => {
           if (s.score !== undefined) {
@@ -172,6 +270,7 @@ export default function App() {
         });
         
         setStudents(updatedStudents);
+        setDescriptiveQuestions(Array.from(descKeys));
         setResultsLoaded(true);
       } catch (err) {
         console.error("Failed to parse results:", err);
@@ -182,39 +281,54 @@ export default function App() {
   };
 
   const exportRosterByClass = () => {
-    if (students.length === 0) return;
-    
-    const workbook = XLSX.utils.book_new();
-    
-    const grouped = students.reduce((acc, student) => {
-      const key = student.grade && student.class ? `${student.grade}학년 ${student.class}반` : '미분류';
-      if (!acc[key]) acc[key] = [];
-      acc[key].push(student);
-      return acc;
-    }, {} as Record<string, Student[]>);
-    
-    Object.keys(grouped).sort().forEach(key => {
-      const classStudents = grouped[key].sort((a, b) => {
-         const numA = parseInt(a.number) || 0;
-         const numB = parseInt(b.number) || 0;
-         return numA - numB;
+    try {
+      if (students.length === 0) {
+        alert("다운로드할 명단이 없습니다.");
+        return;
+      }
+      
+      const workbook = XLSX.utils.book_new();
+      
+      const grouped = students.reduce((acc, student) => {
+        // 엑셀 시트 이름에 사용할 수 없는 특수문자 제거
+        const safeGrade = (student.grade || '').toString().replace(/[\[\]\/*?:\\]/g, '');
+        const safeClass = (student.class || '').toString().replace(/[\[\]\/*?:\\]/g, '');
+        
+        let key = safeGrade && safeClass ? `${safeGrade}학년 ${safeClass}반` : 
+                  safeClass ? `${safeClass}반` : 
+                  safeGrade ? `${safeGrade}학년` : '미분류';
+                  
+        if (!acc[key]) acc[key] = [];
+        acc[key].push(student);
+        return acc;
+      }, {} as Record<string, Student[]>);
+      
+      Object.keys(grouped).sort().forEach(key => {
+        const classStudents = grouped[key].sort((a, b) => {
+           const numA = parseInt(a.number) || 0;
+           const numB = parseInt(b.number) || 0;
+           return numA - numB;
+        });
+        
+        const exportData = classStudents.map(s => ({
+          '학번': s.id,
+          '학년': s.grade,
+          '반': s.class,
+          '번호': s.number,
+          '이름': s.name,
+          '고유코드': s.uniqueCode || ''
+        }));
+        
+        const worksheet = XLSX.utils.json_to_sheet(exportData);
+        // 엑셀 시트 이름은 최대 31자 제한
+        XLSX.utils.book_append_sheet(workbook, worksheet, key.substring(0, 31));
       });
       
-      const exportData = classStudents.map(s => ({
-        '학번': s.id,
-        '학년': s.grade,
-        '반': s.class,
-        '번호': s.number,
-        '이름': s.name,
-        '고유코드(무의미철자)': s.uniqueCode || ''
-      }));
-      
-      const worksheet = XLSX.utils.json_to_sheet(exportData);
-      // Sheet names cannot exceed 31 characters
-      XLSX.utils.book_append_sheet(workbook, worksheet, key.substring(0, 31));
-    });
-    
-    XLSX.writeFile(workbook, "학생명렬표_고유코드.xlsx");
+      XLSX.writeFile(workbook, "학생명렬표_고유코드.xlsx");
+    } catch (error) {
+      console.error("Export error:", error);
+      alert("엑셀 파일 생성 중 오류가 발생했습니다. 콘솔 창을 확인해주세요.");
+    }
   };
 
   const exportToExcel = () => {
@@ -267,7 +381,13 @@ export default function App() {
   }, [stats]);
 
   const wordCloudData = useMemo(() => {
-    const text = students.map(s => s.descriptive).filter(Boolean).join(' ');
+    let text = '';
+    if (selectedQuestion === 'all') {
+      text = students.map(s => s.descriptive).filter(Boolean).join(' ');
+    } else {
+      text = students.map(s => s.responses?.[selectedQuestion]).filter(Boolean).join(' ');
+    }
+    
     const words = text.split(/[\s,.]+/);
     const wordCount: Record<string, number> = {};
     const stopWords = ['그리고', '그래서', '하지만', '그런데', '이', '그', '저', '것', '수', '등', '및', '또는', '있는', '없는', '합니다', '했습니다', '입니다', '없습니다', '너무', '많이', '조금', '잘', '안', '못', '나는', '나를', '나의', '내가', '진짜', '정말', '시간이다', '시간'];
@@ -283,7 +403,7 @@ export default function App() {
       .map(([text, value]) => ({ text, value }))
       .sort((a, b) => b.value - a.value)
       .slice(0, 50);
-  }, [students]);
+  }, [students, selectedQuestion]);
 
   const filteredStudents = useMemo(() => {
     if (!searchTerm) return students;
@@ -531,18 +651,88 @@ export default function App() {
 
             {/* Tab Content: Word Cloud */}
             {activeTab === 'wordcloud' && (
-              <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[calc(100vh-200px)] flex flex-col">
-                <div className="flex items-center gap-2 mb-6">
-                  <Cloud className="text-blue-500" />
-                  <h3 className="text-lg font-bold">서술형 문항 주요 키워드</h3>
-                </div>
-                <div className="flex-1 relative bg-slate-50 rounded-xl border border-slate-100 overflow-hidden">
-                  {wordCloudData.length > 0 ? (
-                    <WordCloud words={wordCloudData} width={800} height={500} />
-                  ) : (
-                    <div className="absolute inset-0 flex items-center justify-center text-slate-400">
-                      서술형 데이터가 충분하지 않습니다.
+              <div className="flex flex-col gap-6">
+                <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm h-[500px] flex flex-col">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                    <div className="flex items-center gap-2">
+                      <Cloud className="text-blue-500" />
+                      <h3 className="text-lg font-bold">서술형 문항 주요 키워드</h3>
                     </div>
+                    {descriptiveQuestions.length > 0 && (
+                      <select
+                        value={selectedQuestion}
+                        onChange={(e) => setSelectedQuestion(e.target.value)}
+                        className="border border-slate-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 max-w-full sm:max-w-md bg-white shadow-sm"
+                      >
+                        <option value="all">전체 문항 통합</option>
+                        {descriptiveQuestions.map((q, idx) => (
+                          <option key={idx} value={q}>{q}</option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                  <div className="flex-1 relative bg-slate-50 rounded-xl border border-slate-100 overflow-hidden">
+                    {wordCloudData.length > 0 ? (
+                      <WordCloud words={wordCloudData} width={800} height={400} />
+                    ) : (
+                      <div className="absolute inset-0 flex items-center justify-center text-slate-400">
+                        서술형 데이터가 충분하지 않습니다.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* AI Analysis Section */}
+                <div className="bg-indigo-50 p-6 rounded-2xl border border-indigo-100 shadow-sm">
+                  <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-6">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="text-indigo-600" />
+                      <h3 className="text-lg font-bold text-indigo-900">AI 문항 응답 분석</h3>
+                    </div>
+                    <button
+                      onClick={analyzeWithAI}
+                      disabled={isAnalyzing || wordCloudData.length === 0}
+                      className={cn(
+                        "flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors shadow-sm",
+                        isAnalyzing || wordCloudData.length === 0
+                          ? "bg-indigo-200 text-indigo-400 cursor-not-allowed"
+                          : "bg-indigo-600 text-white hover:bg-indigo-700"
+                      )}
+                    >
+                      {isAnalyzing ? (
+                        <>
+                          <Loader2 size={16} className="animate-spin" />
+                          분석 중...
+                        </>
+                      ) : (
+                        <>
+                          <Sparkles size={16} />
+                          AI 분석 시작
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {analysisError && (
+                    <div className="p-4 bg-red-50 text-red-700 rounded-lg border border-red-200 mb-4 text-sm">
+                      {analysisError}
+                    </div>
+                  )}
+
+                  {aiAnalysis ? (
+                    <div className="bg-white p-6 rounded-xl border border-indigo-100 shadow-sm prose prose-indigo max-w-none text-slate-700 text-sm sm:text-base">
+                      <div className="markdown-body">
+                        <Markdown>{aiAnalysis}</Markdown>
+                      </div>
+                    </div>
+                  ) : (
+                    !isAnalyzing && !analysisError && (
+                      <div className="flex flex-col items-center justify-center py-12 text-center text-indigo-400">
+                        <Sparkles size={32} className="mb-3 opacity-50" />
+                        <p>우측 상단의 버튼을 눌러 학생들의 응답을 AI로 분석해보세요.</p>
+                        <p className="text-sm mt-1 opacity-75">선택된 문항에 대한 전반적인 특성, 긍정/우려되는 점, 지도 조언을 제공합니다.</p>
+                      </div>
+                    )
                   )}
                 </div>
               </div>
