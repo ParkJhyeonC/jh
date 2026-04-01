@@ -24,6 +24,18 @@ interface Student {
 
 const COLORS = ['#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
 
+const parseScaleValue = (val: any): number | null => {
+  if (val === undefined || val === null || val === '') return null;
+  const strVal = String(val).replace(/\s+/g, '');
+  if (strVal === '전혀아니다') return 0;
+  if (strVal === '조금그렇다') return 1;
+  if (strVal === '그렇다') return 2;
+  if (strVal === '매우그렇다') return 3;
+  
+  const num = parseFloat(String(val).trim());
+  return isNaN(num) ? null : num;
+};
+
 export default function App() {
   const [students, setStudents] = useState<Student[]>([]);
   const [rosterLoaded, setRosterLoaded] = useState(false);
@@ -237,8 +249,8 @@ export default function App() {
                   descKeys.add(key);
                   descriptiveTexts.push(String(value));
                 } else {
-                  const numValue = parseFloat(value);
-                  if (!isNaN(numValue)) {
+                  const numValue = parseScaleValue(value);
+                  if (numValue !== null) {
                     calculatedScore += numValue;
                   }
                 }
@@ -456,8 +468,8 @@ export default function App() {
         if (val !== undefined && val !== null && val !== '') {
           respondedCount++;
           if (!isDescriptive) {
-            const num = parseFloat(val);
-            if (!isNaN(num)) sum += num;
+            const num = parseScaleValue(val);
+            if (num !== null) sum += num;
           }
         } else {
           missingStudents.push(`${s.grade}-${s.class}-${s.number} ${s.name}`);
