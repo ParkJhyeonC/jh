@@ -28,13 +28,14 @@ export default function App() {
   const [students, setStudents] = useState<Student[]>([]);
   const [rosterLoaded, setRosterLoaded] = useState(false);
   const [resultsLoaded, setResultsLoaded] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'wordcloud'>('overview');
+  const [activeTab, setActiveTab] = useState<'overview' | 'students' | 'wordcloud' | 'unmatched'>('overview');
   const [searchTerm, setSearchTerm] = useState('');
   const [descriptiveQuestions, setDescriptiveQuestions] = useState<string[]>([]);
   const [selectedQuestion, setSelectedQuestion] = useState<string>('all');
   const [aiAnalysis, setAiAnalysis] = useState<string>('');
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
+  const [unmatchedResults, setUnmatchedResults] = useState<any[]>([]);
 
   useEffect(() => {
     setAiAnalysis('');
@@ -132,21 +133,26 @@ export default function App() {
             const clsKey = findKey(['반', 'class']);
             const numKey = findKey(['번호', 'number']);
             const idKey = findKey(['학번', 'id']);
+            const codeKey = findKey(['고유코드', '코드', 'code']);
 
             const name = nameKey ? row[nameKey] : '';
             const grade = gradeKey ? row[gradeKey] : '';
             const cls = clsKey ? row[clsKey] : sheetName.replace(/[^0-9]/g, '');
             const num = numKey ? row[numKey] : '';
             const id = idKey ? row[idKey] : `${grade}${cls.toString().padStart(2, '0')}${num.toString().padStart(2, '0')}`;
+            const existingCode = codeKey ? row[codeKey]?.toString().trim().toUpperCase() : '';
             
             if (name) {
+              const finalCode = existingCode || generateUniqueCode();
+              if (existingCode) existingCodes.add(existingCode);
+              
               parsedStudents.push({
                 id: id.toString(),
                 grade: grade.toString(),
                 class: cls.toString(),
                 number: num.toString(),
                 name: name.toString(),
-                uniqueCode: generateUniqueCode()
+                uniqueCode: finalCode
               });
             }
           });
@@ -184,6 +190,7 @@ export default function App() {
         
         let updatedStudents = [...students];
         let matchCount = 0;
+        let unmatched: any[] = [];
         const descKeys = new Set<string>();
         
         workbook.SheetNames.forEach(sheetName => {
@@ -197,11 +204,14 @@ export default function App() {
             const idKey = findKey(['학번', 'id']);
             const totalKey = findKey(['총점', '점수', 'score']);
             const riskKey = findKey(['위험군', '판정', 'risk']);
+            const codeKey = findKey(['고유코드', '코드', 'code']);
 
             const name = nameKey ? row[nameKey] : '';
             const id = idKey ? row[idKey]?.toString() : '';
+            const code = codeKey ? row[codeKey]?.toString().trim().toUpperCase() : '';
             
             const studentIndex = updatedStudents.findIndex(s => 
+              (code && s.uniqueCode === code) ||
               (id && s.id === id) || 
               (name && s.name === name.toString())
             );
@@ -246,12 +256,19 @@ export default function App() {
                 descriptive: descriptive || updatedStudents[studentIndex].descriptive,
                 responses
               };
+            } else {
+              // Unmatched case
+              if (name || id || code) {
+                unmatched.push(row);
+              }
             }
           });
         });
         
-        if (matchCount === 0) {
-          alert("업로드한 검사결과에서 명렬표와 일치하는 학생(이름 또는 학번)을 한 명도 찾을 수 없습니다.\n파일을 다시 확인해주세요.");
+        if (matchCount === 0 && unmatched.length > 0) {
+          alert(`명렬표와 일치하는 학생을 한 명도 찾을 수 없습니다.\n매칭되지 않은 데이터 ${unmatched.length}건이 발견되었습니다.`);
+        } else if (matchCount === 0) {
+          alert("업로드한 검사결과에서 유효한 데이터를 찾을 수 없습니다.\n파일을 다시 확인해주세요.");
           e.target.value = '';
           return;
         }
@@ -270,6 +287,7 @@ export default function App() {
         });
         
         setStudents(updatedStudents);
+        setUnmatchedResults(unmatched);
         setDescriptiveQuestions(Array.from(descKeys));
         setResultsLoaded(true);
       } catch (err) {
@@ -488,8 +506,8 @@ export default function App() {
               </div>
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
                 <h3 className="font-bold flex items-center gap-2 mb-2"><FileSpreadsheet size={16} className="text-emerald-500"/> 결과표 권장 양식</h3>
-                <p className="text-slate-500 mb-2">이름 또는 학번을 기준으로 매칭됩니다.</p>
-                <code className="bg-slate-100 px-2 py-1 rounded text-xs text-slate-700 block">학번 | 이름 | 총점 | 위험군 | 서술형</code>
+                <p className="text-slate-500 mb-2">고유코드, 이름 또는 학번을 기준으로 매칭됩니다.</p>
+                <code className="bg-slate-100 px-2 py-1 rounded text-xs text-slate-700 block">고유코드 | 학번 | 이름 | 총점 | 위험군 | 서술형</code>
               </div>
             </div>
           </div>
@@ -515,6 +533,15 @@ export default function App() {
               >
                 서술형 워드클라우드
               </button>
+              {unmatchedResults.length > 0 && (
+                <button
+                  onClick={() => setActiveTab('unmatched')}
+                  className={cn("px-4 py-2 text-sm font-medium rounded-md transition-all flex items-center gap-2", activeTab === 'unmatched' ? "bg-red-50 text-red-700 shadow-sm border border-red-100" : "text-red-500 hover:text-red-700 hover:bg-red-50/50")}
+                >
+                  <AlertTriangle size={16} />
+                  미매칭 데이터 ({unmatchedResults.length})
+                </button>
+              )}
             </div>
 
             {/* Tab Content: Overview */}
@@ -734,6 +761,61 @@ export default function App() {
                       </div>
                     )
                   )}
+                </div>
+              </div>
+            )}
+            {/* Tab Content: Unmatched */}
+            {activeTab === 'unmatched' && unmatchedResults.length > 0 && (
+              <div className="bg-white rounded-2xl border border-red-200 shadow-sm overflow-hidden flex flex-col h-[calc(100vh-200px)]">
+                <div className="p-4 border-b border-red-100 flex justify-between items-center bg-red-50/50">
+                  <div className="flex items-center gap-2 text-red-700">
+                    <AlertTriangle size={20} />
+                    <h3 className="font-bold">명렬표와 매칭되지 않은 결과 데이터</h3>
+                  </div>
+                  <div className="text-sm font-medium text-red-600 bg-red-100 px-3 py-1 rounded-full">
+                    총 {unmatchedResults.length}건
+                  </div>
+                </div>
+                
+                <div className="p-4 bg-red-50/30 border-b border-red-100 text-sm text-red-600">
+                  아래 데이터는 업로드된 결과표에 존재하지만, 명렬표의 <strong>고유코드, 이름, 학번</strong> 중 어느 것과도 일치하지 않아 분석에서 제외된 항목들입니다. 학생이 코드를 잘못 입력했거나 명렬표에 없는 학생일 수 있습니다.
+                </div>
+
+                <div className="overflow-auto flex-1">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-slate-50 sticky top-0 z-10 shadow-sm">
+                      <tr>
+                        <th className="px-6 py-3 font-medium text-slate-500">제출된 고유코드</th>
+                        <th className="px-6 py-3 font-medium text-slate-500">제출된 학번</th>
+                        <th className="px-6 py-3 font-medium text-slate-500">제출된 이름</th>
+                        <th className="px-6 py-3 font-medium text-slate-500">원시 데이터 (전체)</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-200">
+                      {unmatchedResults.map((row, i) => {
+                        const findKey = (keywords: string[]) => Object.keys(row).find(k => keywords.some(kw => k.replace(/\s+/g, '').toLowerCase().includes(kw)));
+                        const nameKey = findKey(['이름', '성명', 'name']);
+                        const idKey = findKey(['학번', 'id']);
+                        const codeKey = findKey(['고유코드', '코드', 'code']);
+                        
+                        return (
+                          <tr key={i} className="hover:bg-red-50/30 transition-colors">
+                            <td className="px-6 py-4 font-mono text-slate-600">{codeKey ? row[codeKey] : '-'}</td>
+                            <td className="px-6 py-4 font-mono text-slate-600">{idKey ? row[idKey] : '-'}</td>
+                            <td className="px-6 py-4 font-medium">{nameKey ? row[nameKey] : '-'}</td>
+                            <td className="px-6 py-4">
+                              <details className="cursor-pointer text-slate-500">
+                                <summary className="hover:text-slate-800 font-medium">데이터 보기</summary>
+                                <pre className="mt-2 p-3 bg-slate-100 rounded-md text-xs overflow-x-auto max-w-md">
+                                  {JSON.stringify(row, null, 2)}
+                                </pre>
+                              </details>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             )}
