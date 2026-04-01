@@ -136,6 +136,17 @@ export default function App() {
           const sheet = workbook.Sheets[sheetName];
           const json = XLSX.utils.sheet_to_json<any>(sheet);
           
+          // 1차 순회: 엑셀에 이미 존재하는 고유코드를 모두 수집하여 중복 발급 방지
+          json.forEach(row => {
+            const findKey = (keywords: string[]) => Object.keys(row).find(k => keywords.some(kw => k.replace(/\s+/g, '').toLowerCase().includes(kw)));
+            const codeKey = findKey(['고유코드', '코드', 'code']);
+            const existingCode = codeKey && row[codeKey] ? row[codeKey].toString().trim().toUpperCase() : '';
+            if (existingCode) {
+              existingCodes.add(existingCode);
+            }
+          });
+
+          // 2차 순회: 학생 데이터 파싱 및 고유코드 할당 (기존 코드 최우선 유지)
           json.forEach(row => {
             // 띄어쓰기 무시하고 키워드 포함 여부로 컬럼 찾기
             const findKey = (keywords: string[]) => Object.keys(row).find(k => keywords.some(kw => k.replace(/\s+/g, '').toLowerCase().includes(kw)));
@@ -152,11 +163,13 @@ export default function App() {
             const cls = clsKey ? row[clsKey] : sheetName.replace(/[^0-9]/g, '');
             const num = numKey ? row[numKey] : '';
             const id = idKey ? row[idKey] : `${grade}${cls.toString().padStart(2, '0')}${num.toString().padStart(2, '0')}`;
-            const existingCode = codeKey ? row[codeKey]?.toString().trim().toUpperCase() : '';
+            
+            // 이미 엑셀에 있는 코드를 최우선으로 가져옴
+            const existingCode = codeKey && row[codeKey] ? row[codeKey].toString().trim().toUpperCase() : '';
             
             if (name) {
-              const finalCode = existingCode || generateUniqueCode();
-              if (existingCode) existingCodes.add(existingCode);
+              // 기존 코드가 있으면 무조건 그걸 쓰고, 없으면 새로 발급
+              const finalCode = existingCode ? existingCode : generateUniqueCode();
               
               parsedStudents.push({
                 id: id.toString(),
